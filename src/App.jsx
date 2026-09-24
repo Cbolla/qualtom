@@ -5,19 +5,10 @@ import './App.css'
 const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
 const A4_FREQ = 440
 
+// Apenas duas escalas: Maior e Menor
 const SCALES = {
   'Maior': [0, 2, 4, 5, 7, 9, 11],
-  'Menor Natural': [0, 2, 3, 5, 7, 8, 10],
-  'Menor Harmônica': [0, 2, 3, 5, 7, 8, 11],
-  'Menor Melódica': [0, 2, 3, 5, 7, 9, 11],
-  'Pentatônica Maior': [0, 2, 4, 7, 9],
-  'Pentatônica Menor': [0, 3, 5, 7, 10],
-  'Blues': [0, 3, 5, 6, 7, 10],
-  'Dórica': [0, 2, 3, 5, 7, 9, 10],
-  'Frígia': [0, 1, 3, 5, 7, 8, 10],
-  'Lídia': [0, 2, 4, 6, 7, 9, 11],
-  'Mixolídia': [0, 2, 4, 5, 7, 9, 10],
-  'Lócris': [0, 1, 3, 5, 6, 8, 10],
+  'Menor': [0, 2, 3, 5, 7, 8, 10],
 }
 
 // ===== UTILIDADES DE ÁUDIO =====
@@ -109,9 +100,9 @@ class PitchDetector {
   }
 }
 
-// ===== DETECTOR DE ESCALA =====
-function detectAllScales(detectedNotes, minNotes = 2) {
-  if (detectedNotes.length < minNotes) return []
+// ===== DETECTOR DE ESCALA (APENAS MAIOR + MENOR) =====
+function detectScale(detectedNotes, minNotes = 2) {
+  if (detectedNotes.length < minNotes) return null
 
   const pitchClassWeights = new Array(12).fill(0)
   detectedNotes.forEach(note => {
@@ -121,6 +112,7 @@ function detectAllScales(detectedNotes, minNotes = 2) {
   const totalWeight = detectedNotes.reduce((sum, n) => sum + (n.confidence || 1), 0)
   const results = []
 
+  // Testa Maior e Menor para cada tônica
   for (let tonic = 0; tonic < 12; tonic++) {
     for (const [scaleName, intervals] of Object.entries(SCALES)) {
       let matchedWeight = 0
@@ -153,45 +145,31 @@ function detectAllScales(detectedNotes, minNotes = 2) {
     }
   }
 
-  return results.sort((a, b) => b.score - a.score)
-}
+  if (!results.length) return null
 
-function getBestScale(detectedNotes) {
-  const all = detectAllScales(detectedNotes)
-  return all[0] || null
-}
+  // Ordena por score
+  results.sort((a, b) => b.score - a.score)
 
-// Garante que a escala Maior esteja sempre nos resultados
-function ensureMajorScale(candidates, detectedNotes) {
-  if (!candidates.length) return candidates
+  // Pega o melhor Maior e o melhor Menor separadamente
+  const bestMajor = results.find(r => r.scale === 'Maior')
+  const bestMinor = results.find(r => r.scale === 'Menor')
 
-  // Verifica se já tem uma escala Maior no top
-  const hasMajor = candidates.some(c => c.scale === 'Maior')
-  if (hasMajor) return candidates
+  // O "best" geral é o que tiver maior score
+  const best = results[0]
 
-  // Calcula a melhor escala Maior para as notas detectadas
-  const majorScales = candidates.filter(c => c.scale === 'Maior')
-  if (majorScales.length > 0) {
-    // Adiciona a melhor Maior no topo se não estiver
-    const bestMajor = majorScales[0]
-    return [bestMajor, ...candidates.filter(c => c !== bestMajor)]
-  }
-
-  return candidates
+  return { best, major: bestMajor, minor: bestMinor, all: results }
 }
 
 // ===== COMPONENTE PRINCIPAL =====
 function App() {
   const [state, setState] = useState('idle') // idle, listening, result, error
   const [detectedScale, setDetectedScale] = useState(null)
-  const [liveScaleGuess, setLiveScaleGuess] = useState(null)
   const [liveScaleCandidates, setLiveScaleCandidates] = useState([])
   const [liveNotes, setLiveNotes] = useState([])
   const [currentPitch, setCurrentPitch] = useState(null)
   const [confidence, setConfidence] = useState(0)
   const [error, setError] = useState(null)
   const [progress, setProgress] = useState(0)
-  const [autoStopped, setAutoStopped] = useState(false)
 
   const audioContextRef = useRef(null)
   const analyserRef = useRef(null)
@@ -204,9 +182,8 @@ function App() {
   const isListeningRef = useRef(false)
 
   // Configurações
-  const MIN_DURATION = 3000      // Mínimo 3s antes de considerar auto-stop
+  const MIN_DURATION = 3000      // Mínimo 3s para começar a mostrar escala
   const MAX_DURATION = 30000     // Máximo 30s de segurança
-  const TARGET_CONFIDENCE = 0.80 // 80% para parar automaticamente
   const LIVE_UPDATE_INTERVAL = 800
 
   // Cleanup ao desmontar
@@ -242,7 +219,7 @@ function App() {
       Date.now() - n.timestamp < MAX_DURATION + 500
     )
 
-    const finalScale = getBestScale(finalNotes)
+    const finalScale = detectScale(finalNotes)
     setDetectedScale(finalScale)
     setState('result')
     setAutoStopped(false)
@@ -253,12 +230,10 @@ function App() {
     setError(null)
     setLiveNotes([])
     setDetectedScale(null)
-    setLiveScaleGuess(null)
     setLiveScaleCandidates([])
     setCurrentPitch(null)
     setConfidence(0)
     setProgress(0)
-    setAutoStopped(false)
     noteBufferRef.current = []
     startTimeRef.current = Date.now()
     lastScaleUpdateRef.current = 0
@@ -337,28 +312,15 @@ function App() {
             if (now - lastScaleUpdateRef.current >= LIVE_UPDATE_INTERVAL && uniqueNotes.length >= 2) {
               lastScaleUpdateRef.current = now
 
-              const allScales = detectAllScales(uniqueNotes)
-              if (allScales.length > 0) {
-                // Garante escala Maior nos candidatos
-                const withMajor = ensureMajorScale(allScales, uniqueNotes)
-                setLiveScaleGuess(withMajor[0])
-                setLiveScaleCandidates(withMajor.slice(0, 4)) // Top 4
-
-                // AUTO-STOP: se passou do mínimo e tem >80% confiança
-                const elapsed = now - startTimeRef.current
-                const topConfidence = withMajor[0].coverage
-                if (elapsed >= MIN_DURATION && topConfidence >= TARGET_CONFIDENCE) {
-                  // Para automaticamente com alta confiança
-                  const finalNotes = noteBufferRef.current.filter(n =>
-                    Date.now() - n.timestamp < MAX_DURATION + 500
-                  )
-                  const finalScale = getBestScale(finalNotes)
-                  setDetectedScale(finalScale)
-                  setState('result')
-                  setAutoStopped(true)
-                  stopListening()
-                  return
-                }
+              const scaleResult = detectScale(uniqueNotes)
+              if (scaleResult) {
+                // Passa major e minor para o estado live
+                const liveCandidates = []
+                if (scaleResult.major) liveCandidates.push(scaleResult.major)
+                if (scaleResult.minor) liveCandidates.push(scaleResult.minor)
+                setLiveScaleCandidates(liveCandidates)
+                // Não para automático — só mostra o palpite com alta confiança
+                // O usuário decide quando parar
               }
             }
           }
@@ -374,7 +336,7 @@ function App() {
           const finalNotes = noteBufferRef.current.filter(n =>
             Date.now() - n.timestamp < MAX_DURATION + 500
           )
-          const finalScale = getBestScale(finalNotes)
+          const finalScale = detectScale(finalNotes)
           setDetectedScale(finalScale)
           setState('result')
           setAutoStopped(false)
@@ -399,13 +361,11 @@ function App() {
     stopListening()
     setState('idle')
     setDetectedScale(null)
-    setLiveScaleGuess(null)
     setLiveScaleCandidates([])
     setLiveNotes([])
     setCurrentPitch(null)
     setConfidence(0)
     setProgress(0)
-    setAutoStopped(false)
     noteBufferRef.current = []
   }, [stopListening])
 
@@ -437,80 +397,57 @@ function App() {
       </header>
 
       <main className="main">
-        {/* IDLE */}
+        {/* IDLE - Mic icon is the button */}
         {state === 'idle' && (
           <div className="card idle-card">
-            <div className="icon-wrapper">
+            <button className="mic-button" onClick={startListening} aria-label="Iniciar detecção">
+              <div className="mic-ring"></div>
               <svg className="mic-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
                 <path d="M12 2a3 3 0 0 1 3 3v7a3 3 0 0 1-6 0V5a3 3 0 0 1 3-3z"/>
                 <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
                 <line x1="12" y1="19" x2="12" y2="22"/>
               </svg>
-            </div>
-            <h2>Toque no botão e cante</h2>
-            <p>
-              Vou ouvindo até ter <strong>80% de certeza</strong> da escala
-              <br/>
-              <span className="hint">(mín. 3s • máx. 30s • pode parar a qualquer momento)</span>
-            </p>
-            <button className="btn-primary btn-large" onClick={startListening}>
-              <span className="btn-text">Descobrir Tom</span>
             </button>
+            <h2>Toque no microfone e cante</h2>
+            <p className="hint">(mín. 3s • máx. 30s • você para quando quiser)</p>
           </div>
         )}
 
-        {/* LISTENING */}
+        {/* LISTENING - Mic icon is the stop button */}
         {state === 'listening' && (
-          <div className="card listening-card">
-            <div className="status-indicator">
+          <div className="card listening-card compact">
+            <button className="mic-button listening" onClick={finishEarly} aria-label="Parar e ver resultado">
+              <div className="mic-ring listening"></div>
               <div className="pulse-ring"></div>
-              <div className="mic-active">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                  <path d="M12 2a3 3 0 0 1 3 3v7a3 3 0 0 1-6 0V5a3 3 0 0 1 3-3z"/>
-                  <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
-                  <line x1="12" y1="19" x2="12" y2="22"/>
-                </svg>
-              </div>
-            </div>
+              <svg className="mic-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M12 2a3 3 0 0 1 3 3v7a3 3 0 0 1-6 0V5a3 3 0 0 1 3-3z"/>
+                <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+                <line x1="12" y1="19" x2="12" y2="22"/>
+              </svg>
+            </button>
 
             <h2>Ouvindo...</h2>
-            <p className="instruction">
-              {canAutoStop
-                ? 'Confiança alta — vou parar automático ao atingir 80%'
-                : 'Cante naturalmente — analisando em tempo real'}
+            <p className="instruction compact">
+              {canAutoStop && liveScaleCandidates.some(c => c.coverage >= 0.8)
+                ? 'Alta confiança — toque no microfone para ver resultado'
+                : 'Cante naturalmente — analisando...'}
             </p>
 
-            {/* Progress bar */}
-            <div className="progress-container">
+            {/* Progress bar compacta */}
+            <div className="progress-container compact">
               <div className="progress-bar">
                 <div className="progress-fill" style={{ width: `${progress * 100}%` }}></div>
-                {canAutoStop && liveScaleGuess && liveScaleGuess.coverage >= TARGET_CONFIDENCE && (
-                  <div className="progress-target-marker" style={{ left: '80%' }}></div>
-                )}
               </div>
               <span className="progress-time">
-                {formatTime(elapsedMs)} decorridos {canAutoStop ? `• ${Math.round(liveScaleGuess?.coverage * 100 || 0)}% confiança` : ''}
+                {formatTime(elapsedMs)} {canAutoStop && liveScaleCandidates.length > 0 ? `• ${Math.round(Math.max(...liveScaleCandidates.map(c => c.coverage)) * 100)}%` : ''}
               </span>
             </div>
 
-            {/* Botão PARAR */}
-            <button
-              className="btn-stop"
-              onClick={finishEarly}
-              aria-label="Parar gravação e ver resultado agora"
-            >
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-                <rect x="6" y="6" width="12" height="12" rx="2"/>
-              </svg>
-              <span>Parar e Ver Resultado</span>
-            </button>
-
-            {/* Nota atual */}
+            {/* Nota atual compacta */}
             {currentPitch && (
-              <div className="current-pitch">
-                <span className="pitch-label">Nota agora:</span>
+              <div className="current-pitch compact">
                 <span className="pitch-name">{currentPitch.name}</span>
-                <div className="cents-indicator">
+                <div className="cents-indicator compact">
                   <div className="cents-bar">
                     <div
                       className="cents-marker"
@@ -524,56 +461,47 @@ function App() {
               </div>
             )}
 
-            {/* Palpite VIVO */}
-            {liveScaleGuess && (
-              <div className="live-guess">
-                <div className="guess-header">
-                  <span className="guess-badge">
-                    {canAutoStop && liveScaleGuess.coverage >= TARGET_CONFIDENCE
-                      ? 'PRONTO — PARANDO...'
-                      : 'PALPITE ATUAL'}
-                  </span>
-                  <span className="guess-confidence">
-                    {Math.round(liveScaleGuess.coverage * 100)}% match
-                  </span>
-                </div>
-                <div className="guess-main">
-                  <span className="guess-scale-name">{formatScaleName(liveScaleGuess)}</span>
-                  <span className="guess-sub">baseado em {liveNotes.length} nota{liveNotes.length !== 1 ? 's' : ''}</span>
-                </div>
-
-                {liveScaleCandidates.length > 1 && (
-                  <div className="guess-alternatives">
-                    <span className="alt-label">Outras possibilidades:</span>
-                    <div className="alt-list">
-                      {liveScaleCandidates.slice(1).map((c, i) => (
-                        <div key={i} className="alt-item">
-                          <span className="alt-name">{formatScaleName(c)}</span>
-                          <span className="alt-percent">{Math.round(c.coverage * 100)}%</span>
-                        </div>
-                      ))}
+            {/* Palpite VIVO - Grid compacto */}
+            {liveScaleCandidates.length > 0 && (
+              <div className="live-guess compact">
+                <div className="live-scales-grid">
+                  {liveScaleCandidates.find(c => c.scale === 'Maior') && (
+                    <div className="live-scale-box major">
+                      <span className="live-scale-type">Maior</span>
+                      <span className="live-scale-name">
+                        {liveScaleCandidates.find(c => c.scale === 'Maior').tonic} Maior
+                      </span>
+                      <span className="live-scale-confidence">
+                        {Math.round(liveScaleCandidates.find(c => c.scale === 'Maior').coverage * 100)}%
+                      </span>
                     </div>
-                  </div>
-                )}
+                  )}
+
+                  {liveScaleCandidates.find(c => c.scale === 'Menor') && (
+                    <div className="live-scale-box minor">
+                      <span className="live-scale-type">Menor</span>
+                      <span className="live-scale-name">
+                        {liveScaleCandidates.find(c => c.scale === 'Menor').tonic} Menor
+                      </span>
+                      <span className="live-scale-confidence">
+                        {Math.round(liveScaleCandidates.find(c => c.scale === 'Menor').coverage * 100)}%
+                      </span>
+                    </div>
+                  )}
+                </div>
               </div>
             )}
 
-            {/* Placeholder */}
-            {!liveScaleGuess && liveNotes.length < 2 && (
-              <div className="waiting-guess">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" style={{width: 32, height: 32, marginBottom: 8, opacity: 0.5}}>
-                  <circle cx="12" cy="12" r="10"/>
-                  <path d="M12 6v6l4 2"/>
-                </svg>
-                <p>Cante mais algumas notas para eu analisar...</p>
-                <span className="notes-count">{liveNotes.length}/2 notas mínimas</span>
+            {/* Placeholder compacto */}
+            {!liveScaleCandidates.length && liveNotes.length < 2 && (
+              <div className="waiting-guess compact">
+                <p>Cante mais... ({liveNotes.length}/2)</p>
               </div>
             )}
 
-            {/* Notas detectadas */}
+            {/* Notas detectadas compactas */}
             {liveNotes.length > 0 && (
-              <div className="detected-notes">
-                <span className="notes-label">Notas únicas encontradas:</span>
+              <div className="detected-notes compact">
                 <div className="notes-grid">
                   {liveNotes.map((note, i) => (
                     <span key={i} className="note-badge">{note}</span>
@@ -582,12 +510,12 @@ function App() {
               </div>
             )}
 
-            {/* Waveform */}
-            <div className="waveform" aria-hidden="true">
-              {[...Array(32)].map((_, i) => (
+            {/* Waveform menor */}
+            <div className="waveform compact" aria-hidden="true">
+              {[...Array(24)].map((_, i) => (
                 <div key={i} className="wave-bar" style={{
-                  animationDelay: `${i * 50}ms`,
-                  height: `${20 + Math.random() * 60}%`
+                  animationDelay: `${i * 40}ms`,
+                  height: `${25 + Math.random() * 55}%`
                 }}></div>
               ))}
             </div>
@@ -604,76 +532,88 @@ function App() {
               </svg>
             </div>
 
-            <h2>
-              {autoStopped
-                ? 'Resultado (parou automático ≥80%)'
-                : 'Resultado Final'}
-            </h2>
-            <div className="scale-result">
-              <span className="scale-name">{formatScaleName(detectedScale)}</span>
-              <span className="scale-confidence">
-                {Math.round(detectedScale.coverage * 100)}% de correspondência
-              </span>
-            </div>
+            <h2>Resultado Final</h2>
 
-            <div className="scale-details">
-              <h3>Notas da escala {detectedScale.scale}:</h3>
-              <div className="scale-notes">
-                {SCALES[detectedScale.scale].map((interval, i) => {
-                  const noteName = NOTE_NAMES[(NOTE_NAMES.indexOf(detectedScale.tonic) + interval) % 12]
-                  const isDetected = detectedScale.matchedNotes.includes(noteName)
-                  return (
-                    <span
-                      key={i}
-                      className={`scale-note ${isDetected ? 'detected' : ''}`}
-                    >
-                      {noteName}
+            {/* Duas colunas: Maior e Menor */}
+            <div className="scales-grid">
+              {/* Escala Maior */}
+              {detectedScale.major && (
+                <div className="scale-box major">
+                  <div className="scale-box-header">
+                    <span className="scale-type">Maior</span>
+                    <span className="scale-confidence-badge">
+                      {Math.round(detectedScale.major.coverage * 100)}%
                     </span>
-                  )
-                })}
-              </div>
+                  </div>
+                  <div className="scale-name-large">{detectedScale.major.tonic} Maior</div>
+                  <div className="scale-notes">
+                    {SCALES['Maior'].map((interval, i) => {
+                      const noteName = NOTE_NAMES[(NOTE_NAMES.indexOf(detectedScale.major.tonic) + interval) % 12]
+                      const isDetected = detectedScale.major.matchedNotes.includes(noteName)
+                      return (
+                        <span
+                          key={i}
+                          className={`scale-note ${isDetected ? 'detected' : ''}`}
+                        >
+                          {noteName}
+                        </span>
+                      )
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* Escala Menor */}
+              {detectedScale.minor && (
+                <div className="scale-box minor">
+                  <div className="scale-box-header">
+                    <span className="scale-type">Menor</span>
+                    <span className="scale-confidence-badge">
+                      {Math.round(detectedScale.minor.coverage * 100)}%
+                    </span>
+                  </div>
+                  <div className="scale-name-large">{detectedScale.minor.tonic} Menor</div>
+                  <div className="scale-notes">
+                    {SCALES['Menor'].map((interval, i) => {
+                      const noteName = NOTE_NAMES[(NOTE_NAMES.indexOf(detectedScale.minor.tonic) + interval) % 12]
+                      const isDetected = detectedScale.minor.matchedNotes.includes(noteName)
+                      return (
+                        <span
+                          key={i}
+                          className={`scale-note ${isDetected ? 'detected' : ''}`}
+                        >
+                          {noteName}
+                        </span>
+                      )
+                    })}
+                  </div>
+                </div>
+              )}
             </div>
 
-            {/* Sempre mostra a escala Maior correspondente */}
-            {detectedScale.scale !== 'Maior' && (() => {
-              const majorTonic = detectedScale.tonic
-              const majorIntervals = SCALES['Maior']
-              return (
-                <div className="major-scale-box">
-                  <h3>Escala Maior relativa (para referência):</h3>
-                  <div className="major-scale-info">
-                    <div className="scale-notes">
-                      {majorIntervals.map((interval, i) => {
-                        const noteName = NOTE_NAMES[(NOTE_NAMES.indexOf(majorTonic) + interval) % 12]
-                        const isDetected = detectedScale.matchedNotes.includes(noteName)
-                        return (
-                          <span
-                            key={i}
-                            className={`scale-note ${isDetected ? 'detected' : ''} major-ref`}
-                          >
-                            {noteName}
-                          </span>
-                        )
-                      })}
-                    </div>
-                  </div>
-                  <p className="major-hint">{majorTonic} Maior — {detectedScale.scale} de {detectedScale.tonic}</p>
+            {/* Se não achou um dos dois, mostra o melhor geral */}
+            {!detectedScale.major && !detectedScale.minor && detectedScale.best && (
+              <div className="scale-box single">
+                <div className="scale-box-header">
+                  <span className="scale-type">{detectedScale.best.scale}</span>
+                  <span className="scale-confidence-badge">
+                    {Math.round(detectedScale.best.coverage * 100)}%
+                  </span>
                 </div>
-              )
-            })()}
-
-            {/* Top alternativas */}
-            {liveScaleCandidates.length > 1 && (
-              <div className="final-alternatives">
-                <h3>Outras escalas compatíveis:</h3>
-                <div className="alt-list">
-                  {liveScaleCandidates.slice(1, 5).map((c, i) => (
-                    <div key={i} className="alt-item">
-                      <span className="alt-rank">#{i + 2}</span>
-                      <span className="alt-name">{formatScaleName(c)}</span>
-                      <span className="alt-percent">{Math.round(c.coverage * 100)}%</span>
-                    </div>
-                  ))}
+                <div className="scale-name-large">{formatScaleName(detectedScale.best)}</div>
+                <div className="scale-notes">
+                  {SCALES[detectedScale.best.scale].map((interval, i) => {
+                    const noteName = NOTE_NAMES[(NOTE_NAMES.indexOf(detectedScale.best.tonic) + interval) % 12]
+                    const isDetected = detectedScale.best.matchedNotes.includes(noteName)
+                    return (
+                      <span
+                        key={i}
+                        className={`scale-note ${isDetected ? 'detected' : ''}`}
+                      >
+                        {noteName}
+                      </span>
+                    )
+                  })}
                 </div>
               </div>
             )}
